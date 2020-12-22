@@ -237,7 +237,7 @@ export class SlpFaucetHandler {
         const name = process.env.NFTNAME! || "SLP Faucet NFT";
         const ticker = process.env.NFTTICKER! || "SFNFT";
         const documentUri: string|null = process.env.DOCUMENTURI!;
-        const documentHash: Buffer|null = Buffer.from(process.env.DOCUMENTHASH!);
+        const documentHash: Buffer|null = Buffer.from(process.env.DOCUMENTHASH!, 'hex');
 
         await this.increaseChainLength();
         return await this.network.simpleNFT1ChildGenesis(
