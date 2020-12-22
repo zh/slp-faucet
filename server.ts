@@ -25,6 +25,16 @@ app.post("/", async (req, res) => {
 
     if (address === process.env.DISTRIBUTE_SECRET!) {
         try {
+            if (process.env.NFT === 'yes') {
+                await slpFaucet.evenlyDistributeGroupNFTs(process.env.TOKENID!);
+            }
+        } catch (err) {
+            console.log("distribute nfts: ", err);
+            res.render("index", { txid: null, error: err.message });
+            return;
+        }
+
+        try {
             await slpFaucet.evenlyDistributeBch();
         } catch (err) {
             console.log("distribute bch: ", err);
@@ -32,14 +42,14 @@ app.post("/", async (req, res) => {
             return;
         }
 
-        if (process.env.NFT === 'no') {
-            try {
+        try {
+            if (process.env.NFT === 'no') {
                 await slpFaucet.evenlyDistributeTokens(process.env.TOKENID!);
-            } catch (err) {
-                console.log("distribute slp: ", err);
-                res.render("index", { txid: null, error: err.message });
-                return;
             }
+        } catch (err) {
+            console.log("distribute slp: ", err);
+            res.render("index", { txid: null, error: err.message });
+            return;
         }
 
         slpFaucet.currentFaucetAddressIndex = 0;
@@ -57,17 +67,6 @@ app.post("/", async (req, res) => {
         return;
     }
 
-    // always refill with burn tokens
-    if (process.env.NFT === 'yes') {
-        try {
-            await slpFaucet.evenlyDistributeGroupNFTs(process.env.TOKENID!);
-        } catch (err) {
-            console.log("distribute slp: ", err);
-            res.render("index", { txid: null, error: err.message });
-            return;
-        }
-    }
-
     let changeAddr: { address: string, balance: slpjs.SlpBalancesResult };
     try {
         changeAddr = await slpFaucet.selectFaucetAddressForTokens(process.env.TOKENID!);
@@ -80,7 +79,7 @@ app.post("/", async (req, res) => {
     try {
         let inputs: slpjs.SlpAddressUtxoResult[] = [];
         if (process.env.NFT === 'yes') {
-            const groupUtxo = await slpFaucet.findUtxo(process.env.TOKENID!, changeAddr.address);
+            const groupUtxo = await slpFaucet.findBurnUtxo(process.env.TOKENID!, changeAddr.address);
             if (!groupUtxo) {
                 console.log('No Group Token available for burn');
                 return

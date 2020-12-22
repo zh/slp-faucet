@@ -63,16 +63,16 @@ export class SlpFaucetHandler {
         return utxos;
     }
 
-    public async findUtxo(groupId: string, address: string): Promise<slpjs.SlpAddressUtxoResult | undefined> {
+    public async findBurnUtxo(groupId: string, address: string): Promise<slpjs.SlpAddressUtxoResult | undefined> {
         let burnUtxo: slpjs.SlpAddressUtxoResult | undefined;
         const balance = (await this.network.getAllSlpBalancesAndUtxos(address) as slpjs.SlpBalancesResult);
-            if (balance.slpTokenUtxos[groupId]) {
-                balance.slpTokenUtxos[groupId].forEach(txo => {
-                    if (!burnUtxo && txo.slpUtxoJudgementAmount.isEqualTo(1)) {
-                        burnUtxo = txo;
-                    }
-                });
-            }
+        if (balance.slpTokenUtxos[groupId]) {
+            balance.slpTokenUtxos[groupId].forEach(txo => {
+                if (!burnUtxo && txo.slpUtxoJudgementAmount.isEqualTo(1)) {
+                    burnUtxo = txo;
+                }
+            });
+        }
         return burnUtxo;
     }
 
@@ -81,16 +81,32 @@ export class SlpFaucetHandler {
             throw Error("Cannot split token to more than 19 addresses");
         }
 
-        const parentAccount = (await this.network.getAllSlpBalancesAndUtxos(this.addresses[0]) as slpjs.SlpBalancesResult);
-        if (parentAccount.nonSlpUtxos.length === 0 || !parentAccount.slpTokenUtxos[groupId]) {
-            throw Error("There are no NFT Group tokens available");
+        const balances = ((await this.network.getAllSlpBalancesAndUtxos(this.addresses)) as R[]);
+        const parentBalances = balances.filter((i) => {
+            try {
+                return i.address === this.addresses[0] && i.result.slpTokenBalances[groupId].isGreaterThan(0);
+            } catch (_) {
+                return false;
+            }
+        });
+        if (!parentBalances || parentBalances.length === 0) {
+            throw Error("No Parent NFTs available");
         }
 
         // find addresses without UTXO ready to be burned
         const emptyAddresses: string[] = [];
         const emptyAmounts: BigNumber[] = [];
         for (let i = 1; i < this.addresses.length; i++) {
-            const burnUtxo = await this.findUtxo(groupId, this.addresses[i]);
+            let burnUtxo: slpjs.SlpAddressUtxoResult | undefined;
+            balances.filter((b) => b.address === this.addresses[i]).forEach(balance => {
+                if (balance.result && balance.result.slpTokenUtxos[groupId]) {
+                    balance.result.slpTokenUtxos[groupId].forEach(txo => {
+                        if (!burnUtxo && txo.slpUtxoJudgementAmount.isEqualTo(1)) {
+                            burnUtxo = txo;
+                        }
+                    });
+                }
+            })
             if (!burnUtxo) {
                 emptyAddresses.push(this.addresses[i]);
                 emptyAmounts.push(new BigNumber(1));
@@ -98,9 +114,9 @@ export class SlpFaucetHandler {
         }
         // send utxo with qty=1 to all addresses
         if (emptyAddresses.length > 0) {
-            let inputs: slpjs.SlpAddressUtxoResult[] = [];
-            inputs = [...parentAccount.nonSlpUtxos, ...parentAccount.slpTokenUtxos[groupId]];
-            inputs.map((i) => i.wif = this.wifs[this.addresses[0] as any]);
+            const parentUtxos = await this.tokenUtxos(parentBalances, groupId);
+            const bchUtxos = await this.bchUtxos(balances);
+            const inputs: slpjs.SlpAddressUtxoResult[] = [...bchUtxos, ...parentUtxos];
             const burnTxId = await this.network.simpleTokenSend(
                 groupId,
                 emptyAmounts,
@@ -156,10 +172,10 @@ export class SlpFaucetHandler {
         const utxos: slpjs.SlpAddressUtxoResult[] = [];
         const balances = ((await this.network.getAllSlpBalancesAndUtxos(this.addresses)) as R[]);
 
-        const bchBalances = balances.filter((i) => i.result.nonSlpUtxos.length > 0);
         const bchUtxos = await this.bchUtxos(balances);
         utxos.push(...bchUtxos);
 
+        const bchBalances = balances.filter((i) => i.result.nonSlpUtxos.length > 0);
         const totalBch = bchBalances.reduce((t, v) => t = t.plus(v.result.satoshis_available_bch), new BigNumber(0));
         const sendCost = this.network.slp.calculateSendCost(0, utxos.length, this.addresses.length, this.addresses[0], 1, false); // rough overestimate
         console.log("estimated send cost:", sendCost);
@@ -189,19 +205,20 @@ export class SlpFaucetHandler {
 
             console.log("-----------------------------------");
             console.log("Address Index: ", this.currentFaucetAddressIndex);
-
             console.log(`Unconfirmed chain length: ${this.unconfirmedChainLength.get(this.currentAddress)}`);
-
             console.log("cash address:", Utils.toCashAddress(addresses[i]));
             console.log("Processing this address' UTXOs with SLP validator...");
             const addressFrom = (process.env.NFT === 'no') ? 0 : i;
             const sendCost = this.network.slp.calculateSendCost(60, bals.nonSlpUtxos.length + bals.slpTokenUtxos[tokenId].length, 3, addresses[addressFrom]) - 546;
-            console.log("Token input quantity: ", bals.slpTokenBalances[tokenId].toFixed());
+            const tokenQuantity = bals.slpTokenBalances[tokenId] as BigNumber;
+            console.log("Token input quantity: ", tokenQuantity.toFixed());
             console.log("BCH (satoshis_available_bch):", bals.satoshis_available_bch);
             console.log("Estimated send cost (satoshis):", sendCost);
-            if (bals.slpTokenBalances[tokenId].isGreaterThan(0) === true && bals.satoshis_available_bch > sendCost) {
+            const hasTokens = process.env.NFT === 'no' ? tokenQuantity.isGreaterThan(0) : tokenQuantity.isEqualTo(1)
+            if (hasTokens === true && bals.satoshis_available_bch > sendCost) {
                 console.log("Using address index:", this.currentFaucetAddressIndex);
                 console.log("-----------------------------------");
+                this.currentFaucetAddressIndex++;
                 return { address: Utils.toSlpAddress(addresses[i]), balance: bals };
             }
             console.log("Address index", this.currentFaucetAddressIndex, "has insufficient BCH to fuel token transaction, trying the next index.");
@@ -217,7 +234,6 @@ export class SlpFaucetHandler {
     }
 
     public async nftChildTokenSend(groupId: string, inputUtxos: slpjs.SlpAddressUtxoResult[], tokenReceiverAddress: string, changeReceiverAddress: string): Promise<string> {
-        // TODO: get these from .env
         const name = process.env.NFTNAME! || "SLP Faucet NFT";
         const ticker = process.env.NFTTICKER! || "SFNFT";
         const documentUri: string|null = process.env.DOCUMENTURI!;
